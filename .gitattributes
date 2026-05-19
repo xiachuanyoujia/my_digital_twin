@@ -1,2 +1,58 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Binary files - keep as-is
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.mp4 binary
+*.webm binary
+*.ogg binary
+*.wav binary
+*.mp3 binary
+*.zip binary
+*.tar.gz binary
+*.gz binary
+
+# Python
+*.py text diff=python
+*.pyw text
+
+# JavaScript / TypeScript
+*.js text
+*.mjs text
+*.cjs text
+*.ts text
+*.jsx text
+*.tsx text
+
+# Web
+*.html text
+*.css text
+*.scss text
+*.less text
+*.svg text
+
+# Config / Data
+*.json text
+*.yaml text
+*.yml text
+*.toml text
+*.ini text
+*.cfg text
+*.conf text
+
+# Shell / Batch
+*.sh text eol=lf
+*.bash text eol=lf
+*.bat text eol=crlf
+
+# Documentation
+*.md text
+*.txt text

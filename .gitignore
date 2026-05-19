@@ -1,0 +1,40 @@
+# ── Python ──────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+wheels/
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ── Environment / Secrets ──────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── IDE / Editors ──────────────────────────────────
+.claude/
+.cursor/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Node.js ────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+
+# ── Project specific ───────────────────────────────
+assets/models/*
