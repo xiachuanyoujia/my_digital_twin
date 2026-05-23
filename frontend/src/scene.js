@@ -39,15 +39,6 @@ export function createScene(container) {
   rimLight.position.set(0, -0.5, -3);
   scene.add(rimLight);
 
-  // 地面
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(20, 20),
-    new THREE.MeshStandardMaterial({ color: 0x222244, roughness: 0.8 })
-  );
-  ground.rotation.x = -Math.PI / 2;
-  ground.receiveShadow = true;
-  scene.add(ground);
-
   const grid = new THREE.GridHelper(20, 20, 0x444466, 0x222233);
   scene.add(grid);
 
