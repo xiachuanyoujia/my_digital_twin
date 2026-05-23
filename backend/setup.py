@@ -13,8 +13,8 @@ FILES = [
     # Swagger UI (pinned to match fastapi 0.115.x)
     (STATIC / "swagger-ui-bundle.js", "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui-bundle.js"),
     (STATIC / "swagger-ui.css", "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui.css"),
-    # MediaPipe pose landmarker model (GPU-compatible float16)
-    (MODELS / "pose_landmarker.task", "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"),
+    # MediaPipe pose landmarker model (lite, GPU-compatible float16)
+    (MODELS / "pose_landmarker_lite.task", "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"),
 ]
 
 

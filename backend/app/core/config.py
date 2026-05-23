@@ -18,6 +18,13 @@ class Settings(BaseSettings):
 
     model_dir: str = "../assets/models"
 
+    # YOLO config
+    pose_backend: str = "hybrid"  # "mediapipe" | "yolo" | "hybrid"
+    yolo_person_model: str = "yolov8n.pt"
+    yolo_pose_model: str = "yolov8n-pose.pt"
+    yolo_confidence: float = 0.5
+    yolo_iou: float = 0.45
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -12,9 +12,49 @@ from mediapipe.tasks.python.core import base_options as bo
 from mediapipe.tasks.python.vision import RunningMode
 
 from app.core.config import settings
-from app.models.pose import Landmark, PoseFrame
+from app.models.pose import BASIC_LANDMARK_INDICES, Landmark, PoseFrame
 
-MODEL_PATH = Path(__file__).parent.parent.parent / "models" / "pose_landmarker.task"
+MODEL_PATH = Path(__file__).parent.parent.parent / "models" / "pose_landmarker_lite.task"
+
+
+class PoseSmoother:
+    """自适应速度低通滤波器 —— 静止时重度平滑降噪，运动时减少平滑降低延迟。
+
+    核心思路: 基于帧间位移估算速度 velocity，动态调节混合系数 alpha。
+      - velocity ≈ 0 (静止): alpha = min_alpha (重度平滑)
+      - velocity 大 (运动):  alpha 逼近 max_alpha (快速响应)
+    """
+
+    def __init__(self, min_alpha: float = 0.25, max_alpha: float = 0.75) -> None:
+        self.min_alpha = min_alpha
+        self.max_alpha = max_alpha
+        self._prev: list[Landmark] | None = None
+
+    def smooth(self, landmarks: list[Landmark]) -> list[Landmark]:
+        if self._prev is None or len(self._prev) != len(landmarks):
+            self._prev = landmarks
+            return landmarks
+
+        result: list[Landmark] = []
+        for curr, prev in zip(landmarks, self._prev):
+            dx = curr.x - prev.x
+            dy = curr.y - prev.y
+            velocity = (dx * dx + dy * dy) ** 0.5
+
+            # 速度越快 alpha 越高 (更相信当前帧), 反之 alpha 越低 (更多滤波)
+            t = min(1.0, velocity * 80.0)
+            alpha = self.min_alpha + (self.max_alpha - self.min_alpha) * t
+            alpha *= curr.visibility  # 可见度低时更依赖历史值
+
+            result.append(Landmark(
+                x=alpha * curr.x + (1 - alpha) * prev.x,
+                y=alpha * curr.y + (1 - alpha) * prev.y,
+                z=alpha * curr.z + (1 - alpha) * prev.z,
+                visibility=curr.visibility,
+            ))
+
+        self._prev = result
+        return result
 
 
 class PoseDetector:
@@ -30,6 +70,8 @@ class PoseDetector:
             min_tracking_confidence=settings.pose_min_tracking_confidence,
         )
         self.landmarker = vision.PoseLandmarker.create_from_options(options)
+        self._smoother = PoseSmoother()
+        self._world_smoother = PoseSmoother()
 
     def process_frame(self, frame: np.ndarray) -> PoseFrame | None:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -37,20 +79,31 @@ class PoseDetector:
         result = self.landmarker.detect(mp_image)
 
         if not result.pose_landmarks:
+            self._smoother._prev = None
+            self._world_smoother._prev = None
+            self._no_detect_count = getattr(self, '_no_detect_count', 0) + 1
+            if self._no_detect_count <= 3 or self._no_detect_count % 30 == 0:
+                print(f"[PoseDetector] 未检测到人体 (第{self._no_detect_count}次) frame_shape={frame.shape}", flush=True)
             return None
 
+        self._detect_count = getattr(self, '_detect_count', 0) + 1
+        if self._detect_count <= 3 or self._detect_count % 30 == 0:
+            print(f"[PoseDetector] 检测到人体 #{self._detect_count} frame_shape={frame.shape}", flush=True)
+
         # result.pose_landmarks is list[list[NormalizedLandmark]] — one list per detected pose
-        landmarks = [
-            Landmark(x=lm.x, y=lm.y, z=lm.z, visibility=lm.visibility)
-            for lm in result.pose_landmarks[0]
-        ]
+        full = result.pose_landmarks[0]
+        landmarks = self._smoother.smooth([
+            Landmark(x=full[i].x, y=full[i].y, z=full[i].z, visibility=full[i].visibility)
+            for i in BASIC_LANDMARK_INDICES
+        ])
 
         world_landmarks = None
         if result.pose_world_landmarks:
-            world_landmarks = [
-                Landmark(x=lm.x, y=lm.y, z=lm.z, visibility=lm.visibility)
-                for lm in result.pose_world_landmarks[0]
-            ]
+            full_world = result.pose_world_landmarks[0]
+            world_landmarks = self._world_smoother.smooth([
+                Landmark(x=full_world[i].x, y=full_world[i].y, z=full_world[i].z, visibility=full_world[i].visibility)
+                for i in BASIC_LANDMARK_INDICES
+            ])
 
         return PoseFrame(
             timestamp=time.time(),
@@ -66,13 +119,20 @@ class CameraCapture:
     def __init__(self, camera_index: int | None = None) -> None:
         idx = camera_index if camera_index is not None else settings.camera_index
         self.cap = cv2.VideoCapture(idx)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, settings.camera_width)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, settings.camera_height)
-        self.cap.set(cv2.CAP_PROP_FPS, settings.camera_fps)
+        if not self.cap.isOpened():
+            print(f"[CameraCapture] 无法打开摄像头 index={idx}, 尝试 index=0")
+            self.cap = cv2.VideoCapture(0)
+        actual_w = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        actual_h = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
+        print(f"[CameraCapture] 摄像头已打开 index={idx} "
+              f"分辨率={actual_w:.0f}x{actual_h:.0f} fps={actual_fps:.0f}")
 
     def read(self) -> np.ndarray | None:
         ret, frame = self.cap.read()
-        return frame if ret else None
+        if not ret:
+            return None
+        return frame
 
     def close(self) -> None:
         self.cap.release()
@@ -82,21 +142,57 @@ class PosePipeline:
     def __init__(self) -> None:
         self.camera = CameraCapture()
         self.detector = PoseDetector()
+        self._running = False
+        self._target_fps = 30.0
+        self._min_interval = 1.0 / self._target_fps
 
     async def stream(self) -> AsyncGenerator[PoseFrame, None]:
         import asyncio
+        import sys
 
+        self._running = True
         loop = asyncio.get_event_loop()
-        while True:
-            frame = await loop.run_in_executor(None, self.camera.read)
-            if frame is None:
-                continue
-            pose_frame = await loop.run_in_executor(
-                None, self.detector.process_frame, frame
-            )
-            if pose_frame is not None:
-                yield pose_frame
+        last_send = 0.0
+        frame_count = 0
+        detect_count = 0
+        last_report = loop.time()
+
+        msg = "[PosePipeline] 流已启动, 等待摄像头数据..."
+        print(msg, flush=True)
+        sys.stdout.flush()
+
+        try:
+            while self._running:
+                frame = await loop.run_in_executor(None, self.camera.read)
+                if frame is None:
+                    await asyncio.sleep(0.01)
+                    continue
+
+                frame_count += 1
+                now = loop.time()
+                if now - last_report > 3.0:
+                    print(f"[PosePipeline] 状态: {frame_count} 帧已读取, {detect_count} 次检测到人体, "
+                          f"fps≈{frame_count/(now-last_report+0.001):.1f}", flush=True)
+                    frame_count = 0
+                    detect_count = 0
+                    last_report = now
+
+                pose_frame = await loop.run_in_executor(
+                    None, self.detector.process_frame, frame
+                )
+                if pose_frame is not None:
+                    detect_count += 1
+                    now = loop.time()
+                    elapsed = now - last_send
+                    if elapsed < self._min_interval:
+                        await asyncio.sleep(self._min_interval - elapsed)
+                    last_send = loop.time()
+                    yield pose_frame
+        finally:
+            self._running = False
+            print("[PosePipeline] 流已停止", flush=True)
 
     def close(self) -> None:
+        self._running = False
         self.camera.close()
         self.detector.close()
