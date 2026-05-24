@@ -10,6 +10,7 @@ import numpy as np
 from ultralytics import YOLO
 
 from app.core.config import settings
+from app.core.logger import log_pose_frame, log_status
 from app.models.pose import COCO_TO_BASIC, Landmark, PoseFrame
 from app.services.pose_detection import CameraCapture, PoseDetector, PoseSmoother
 
@@ -164,7 +165,7 @@ class YoloPoseDetector:
 
         keypoints = results[0].keypoints
         if keypoints is None or keypoints.data is None or len(keypoints.data) == 0:
-            self._smoother._prev = None
+            self._smoother.mark_gap()
             return None
 
         # 取第一个（置信度最高的）人物
@@ -269,6 +270,8 @@ class HybridPosePipeline:
         result = self.mediapipe_detector.landmarker.detect(mp_image)
 
         if not result.pose_landmarks:
+            self._roi_smoother.mark_gap()
+            self._roi_world_smoother.mark_gap()
             return None
 
         from app.models.pose import BASIC_LANDMARK_INDICES
@@ -374,6 +377,8 @@ class HybridPosePipeline:
 
                 if pose_frame is not None:
                     yield_count += 1
+                    log_pose_frame("Hybrid", pose_frame.landmarks,
+                                   extra=lambda t0=now, t1=loop.time(): f"bbox={'Y' if bbox else 'N'} latency={((t1-t0)*1000):.1f}ms")
                     now = loop.time()
                     elapsed = now - last_send
                     if elapsed < self._min_interval:
@@ -385,7 +390,7 @@ class HybridPosePipeline:
             traceback.print_exc()
         finally:
             self._running = False
-            print(f"[HybridPipeline] stream() 已结束, 共读取{frame_count}帧, 发送{yield_count}帧", flush=True)
+            log_status("Hybrid", status="stopped", frames=frame_count, detected=detect_count, yielded=yield_count)
 
     def close(self) -> None:
         self._running = False
@@ -447,11 +452,15 @@ class YoloPosePipeline:
                     detect_count = 0
                     last_report = now
 
+                t0 = loop.time()
                 pose_frame = await loop.run_in_executor(
                     None, self.detector.process_frame, frame
                 )
+                t1 = loop.time()
                 if pose_frame is not None:
                     detect_count += 1
+                    log_pose_frame("YOLO", pose_frame.landmarks,
+                                   extra=lambda t0=t0, t1=t1: f"latency={((t1-t0)*1000):.1f}ms")
                     now = loop.time()
                     elapsed = now - last_send
                     if elapsed < self._min_interval:
@@ -460,7 +469,7 @@ class YoloPosePipeline:
                     yield pose_frame
         finally:
             self._running = False
-            print("[YoloPipeline] stream() 已结束", flush=True)
+            log_status("YOLO", status="stopped", frames=frame_count, detected=detect_count)
 
     def close(self) -> None:
         self._running = False

@@ -58,7 +58,7 @@ def main() -> None:
     args = parser.parse_args()
 
     data_dir = Path(args.data)
-    config_dir = Path(args.config_dir)
+    config_dir = DEFAULT_CONFIG_DIR
     config_dir.mkdir(parents=True, exist_ok=True)
 
     # 统计数据集

@@ -88,7 +88,11 @@ def _landmarks_to_coco(full_landmarks, frame_w: int, frame_h: int) -> list[tuple
                 break
         if mp_idx is not None and mp_idx < len(full_landmarks):
             lm = full_landmarks[mp_idx]
-            result.append((lm.x, lm.y, lm.visibility or 1.0))
+            # MediaPipe can return coords slightly outside [0,1] for body parts
+            # partially off-frame (e.g. feet below image, hands above head)
+            x = max(0.0, min(1.0, lm.x))
+            y = max(0.0, min(1.0, lm.y))
+            result.append((x, y, lm.visibility or 1.0))
         else:
             result.append((0.0, 0.0, 0.0))
     return result
@@ -159,12 +163,35 @@ def _draw_overlay(frame: np.ndarray, kpts: list[tuple[float, float, float]],
     return frame
 
 
+def _keypoints_changed(prev_kpts: list[tuple[float, float, float]],
+                      curr_kpts: list[tuple[float, float, float]],
+                      threshold: float = 0.03) -> bool:
+    """Check if keypoints changed enough to warrant saving a new frame."""
+    if prev_kpts is None:
+        return True
+    total_movement = 0.0
+    valid = 0
+    for pk, ck in zip(prev_kpts, curr_kpts):
+        if pk[2] > 0.3 and ck[2] > 0.3:
+            total_movement += ((ck[0] - pk[0]) ** 2 + (ck[1] - pk[1]) ** 2) ** 0.5
+            valid += 1
+    if valid == 0:
+        return True
+    return (total_movement / valid) > threshold
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="YOLO 姿态训练数据采集工具")
     parser.add_argument("--camera", type=int, default=0, help="摄像头索引")
     parser.add_argument("--output", type=str, default=str(OUTPUT_DIR), help="输出目录")
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
+    parser.add_argument("--auto", action="store_true",
+                        help="自动采集模式: 人体检测到且姿态变化时自动保存")
+    parser.add_argument("--interval", type=float, default=0.5,
+                        help="自动采集最小间隔(秒), 默认0.5")
+    parser.add_argument("--max-frames", type=int, default=0,
+                        help="自动采集最大帧数, 0=无限")
     args = parser.parse_args()
 
     out_dir = Path(args.output)
@@ -180,10 +207,16 @@ def main() -> None:
     landmarker = _init_mediapipe()
     saved_count = len(list(img_dir.glob("*.jpg")))
     print(f"[DataCollector] 摄像头已启动，已保存 {saved_count} 帧")
-    print("[DataCollector] S = 保存当前帧 | Q = 退出")
+    if args.auto:
+        print(f"[DataCollector] 自动采集模式: 间隔={args.interval}s, 最大={args.max_frames or '无限'}")
+    else:
+        print("[DataCollector] S = 保存当前帧 | Q = 退出")
 
     prev_time = time.time()
     fps = 0.0
+    last_auto_save = 0.0
+    prev_kpts = None
+    auto_saved = 0
 
     try:
         while True:
@@ -209,13 +242,29 @@ def main() -> None:
                 kpts = _landmarks_to_coco(full, args.width, args.height)
                 bbox = _compute_bbox(kpts, args.width, args.height)
 
+            should_save = False
+
+            if args.auto and result.pose_landmarks:
+                if args.max_frames > 0 and auto_saved >= args.max_frames:
+                    print(f"[DataCollector] 已达到最大采集帧数 {args.max_frames}, 退出")
+                    break
+                if (curr_time - last_auto_save) >= args.interval:
+                    if _keypoints_changed(prev_kpts, kpts):
+                        should_save = True
+
             display = _draw_overlay(display, kpts, bbox, saved_count, fps)
+            if args.auto:
+                cv2.putText(display, f"Auto: {auto_saved}/{args.max_frames or 'inf'}",
+                            (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 1)
             cv2.imshow("Data Collector", display)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
-            elif key == ord('s'):
+            elif key == ord('s') and not args.auto:
+                should_save = True
+
+            if should_save:
                 ts = int(time.time() * 1000)
                 img_path = img_dir / f"frame_{ts}.jpg"
                 lbl_path = lbl_dir / f"frame_{ts}.txt"
@@ -231,6 +280,9 @@ def main() -> None:
                 lbl_path.write_text(" ".join(label_parts))
 
                 saved_count += 1
+                auto_saved += 1
+                prev_kpts = kpts
+                last_auto_save = curr_time
                 print(f"[DataCollector] 已保存 #{saved_count}: {img_path.name}")
 
     except KeyboardInterrupt:

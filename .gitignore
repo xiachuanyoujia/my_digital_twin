@@ -39,3 +39,25 @@ frontend/public/
 
 # ── Project specific ───────────────────────────────
 assets/models/*
+
+# ── Training / Calibration artifacts ───────────────
+/data/
+backend/runs/
+human_pose/
+backend/app/core/calibration_params.json
+
+# ── Base models (auto-downloaded by ultralytics) ───
+backend/yolov8n.pt
+backend/yolov8n-pose.pt
+backend/yolo26n.pt
+backend/*.pt
+!backend/models/
+
+# ── MediaPipe runtime files ────────────────────────
+backend/models/*.task
+
+# ── Claude conversation logs ───────────────────────
+*.jsonl
+
+# ── OS junk ────────────────────────────────────────
+Desktop.ini

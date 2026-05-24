@@ -8,11 +8,25 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes.pose import router as pose_router
+from app.api.routes.calibration import router as calibration_router
 from app.core.config import settings
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Load persisted calibration params on startup
+    import json
+    from pathlib import Path
+    params_path = Path(__file__).parent / "core" / "calibration_params.json"
+    if params_path.exists():
+        try:
+            data = json.loads(params_path.read_text())
+            from app.api.routes import calibration
+            calibration._params["scale_x"] = data.get("scale_x", 2.5)
+            calibration._params["scale_y"] = data.get("scale_y", 3.5)
+            calibration._params["scale_z"] = data.get("scale_z", 2.5)
+        except Exception:
+            pass
     yield
 
 
@@ -36,6 +50,7 @@ app.add_middleware(
 )
 
 app.include_router(pose_router)
+app.include_router(calibration_router)
 
 
 @app.get("/docs", include_in_schema=False)

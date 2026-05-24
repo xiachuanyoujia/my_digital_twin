@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     yolo_confidence: float = 0.5
     yolo_iou: float = 0.45
 
+    # Calibration
+    calibration_window: int = 200
+    calibration_convergence: float = 0.01
+    calibration_min_samples: int = 100
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -12,6 +12,7 @@ from mediapipe.tasks.python.core import base_options as bo
 from mediapipe.tasks.python.vision import RunningMode
 
 from app.core.config import settings
+from app.core.logger import log_pose_frame, log_status
 from app.models.pose import BASIC_LANDMARK_INDICES, Landmark, PoseFrame
 
 MODEL_PATH = Path(__file__).parent.parent.parent / "models" / "pose_landmarker_lite.task"
@@ -25,12 +26,18 @@ class PoseSmoother:
       - velocity 大 (运动):  alpha 逼近 max_alpha (快速响应)
     """
 
-    def __init__(self, min_alpha: float = 0.25, max_alpha: float = 0.75) -> None:
+    def __init__(self, min_alpha: float = 0.45, max_alpha: float = 0.88) -> None:
         self.min_alpha = min_alpha
         self.max_alpha = max_alpha
         self._prev: list[Landmark] | None = None
+        self._gap_frames = 0
 
     def smooth(self, landmarks: list[Landmark]) -> list[Landmark]:
+        # Reset after gap in detection — clears stale motion trail immediately
+        if self._gap_frames > 3:
+            self._prev = None
+        self._gap_frames = 0
+
         if self._prev is None or len(self._prev) != len(landmarks):
             self._prev = landmarks
             return landmarks
@@ -42,7 +49,8 @@ class PoseSmoother:
             velocity = (dx * dx + dy * dy) ** 0.5
 
             # 速度越快 alpha 越高 (更相信当前帧), 反之 alpha 越低 (更多滤波)
-            t = min(1.0, velocity * 80.0)
+            # Increased sensitivity: velocity * 120 for faster response
+            t = min(1.0, velocity * 120.0)
             alpha = self.min_alpha + (self.max_alpha - self.min_alpha) * t
             alpha *= curr.visibility  # 可见度低时更依赖历史值
 
@@ -55,6 +63,10 @@ class PoseSmoother:
 
         self._prev = result
         return result
+
+    def mark_gap(self) -> None:
+        """Call when no detection in a frame — count gaps to trigger reset."""
+        self._gap_frames += 1
 
 
 class PoseDetector:
@@ -79,8 +91,8 @@ class PoseDetector:
         result = self.landmarker.detect(mp_image)
 
         if not result.pose_landmarks:
-            self._smoother._prev = None
-            self._world_smoother._prev = None
+            self._smoother.mark_gap()
+            self._world_smoother.mark_gap()
             self._no_detect_count = getattr(self, '_no_detect_count', 0) + 1
             if self._no_detect_count <= 3 or self._no_detect_count % 30 == 0:
                 print(f"[PoseDetector] 未检测到人体 (第{self._no_detect_count}次) frame_shape={frame.shape}", flush=True)
@@ -177,11 +189,15 @@ class PosePipeline:
                     detect_count = 0
                     last_report = now
 
+                t0 = loop.time()
                 pose_frame = await loop.run_in_executor(
                     None, self.detector.process_frame, frame
                 )
+                t1 = loop.time()
                 if pose_frame is not None:
                     detect_count += 1
+                    log_pose_frame("MediaPipe", pose_frame.landmarks,
+                                   extra=lambda t0=t0, t1=t1: f"latency={((t1-t0)*1000):.1f}ms")
                     now = loop.time()
                     elapsed = now - last_send
                     if elapsed < self._min_interval:
@@ -190,7 +206,7 @@ class PosePipeline:
                     yield pose_frame
         finally:
             self._running = False
-            print("[PosePipeline] 流已停止", flush=True)
+            log_status("MediaPipe", status="stopped", frames=frame_count, detected=detect_count)
 
     def close(self) -> None:
         self._running = False

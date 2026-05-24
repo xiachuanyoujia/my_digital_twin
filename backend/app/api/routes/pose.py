@@ -100,6 +100,13 @@ async def pose_stream(websocket: WebSocket) -> None:
                       f"landmarks={len(pose_frame.landmarks)}", flush=True)
             try:
                 await websocket.send_json(pose_frame.model_dump())
+                # Store landmarks for calibration comparison
+                from app.api.routes.calibration import update_last_landmarks
+                update_last_landmarks(
+                    [{"x": lm.x, "y": lm.y, "z": lm.z, "visibility": lm.visibility}
+                     for lm in pose_frame.landmarks],
+                    pose_frame.timestamp,
+                )
             except Exception:
                 break
     except WebSocketDisconnect:

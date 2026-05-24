@@ -1,6 +1,6 @@
 # My Digital Twin 项目成果报告
 
-> 版本: 0.1.0 | 日期: 2026-05-24 | 分支: dev
+> 版本: 0.2.0 | 日期: 2026-05-24 | 分支: dev
 
 ---
 
@@ -17,6 +17,10 @@
 | 端到端延迟 | < 50ms | 达标 |
 | 关键点数量 | 13 个 | 达标 (覆盖全身主要关节) |
 | 检测后端 | 1 种 | 超额 (3 种可切换) |
+| 自定义模型 | 有效训练 | 完成 (Pose mAP50: 0.015→0.995, 提升66倍) |
+| 训练数据集 | ≥ 500 张 | 558 张 (合成500 + 采集58) |
+| 3D 骨骼驱动 | 13 段全跟随 | 完成 (顶点级分割 + 调试可视化) |
+| 标准化日志 | 可调试 XYZ | 完成 (前后端统一格式, 周期输出) |
 
 ---
 
@@ -115,7 +119,11 @@
 - **文件**: `backend/app/services/yolo_detection.py` (YoloPoseDetector + YoloPosePipeline)
 - **流程**: 摄像头 → YOLOv8n-pose 端到端推理 → COCO 17 关键点 → 映射为 13 关键点 → Smoothing → PoseFrame
 - **特点**: 端到端单模型，速度最快，适合资源受限场景
-- **模型**: `backend/models/yolov8n-pose.pt` (约 5.5MB)
+- **模型**: `backend/models/yolo_pose_custom.pt` (自定义训练, 6.5MB), 优先自动加载; 回退 `yolov8n-pose.pt` (预训练, 5.5MB)
+- **自定义训练**: 详见 [训练报告](../docs/training_report.md)
+  - 数据集: 558 张 (合成 + 采集) 图像
+  - 30 轮训练后 Pose mAP50 从 0.015 → 0.995 (提升 66 倍)
+  - 推理速度: 2.0ms/帧 (与预训练相同)
 
 #### 3.1.3 混合模式 (Hybrid, 默认推荐)
 - **文件**: `backend/app/services/yolo_detection.py` (HybridPosePipeline)
@@ -224,26 +232,48 @@
 
 ### 3.9 数据采集与训练流水线
 
-#### 3.9.1 数据采集工具
-- **文件**: `backend/scripts/collect_training_data.py`
-- **功能**: 打开摄像头运行 MediaPipe，按 `S` 键保存标注帧
-- **输出**: YOLO 格式 (JPEG 图片 + 边界框 + 17 COCO 关键点标签)
-- **特点**: 实时叠加可视化 (关键点+骨架+边界框+FPS+计数)
+#### 3.9.1 合成数据生成
+- **文件**: `backend/scripts/generate_synthetic_data.py`
+- **功能**: 生成随机姿态的棒状图 (前向运动学 + 随机关节角度)
+- **输出**: 500 张合成图像 + 完美 COCO 17 关键点标签
+- **背景多样性**: 纯色+噪声、渐变、随机模糊 3 种背景
+- **数据增强**: 随机位置偏移、缩放、多人同图 (<20%)、高斯模糊
 
-#### 3.9.2 训练脚本
+#### 3.9.2 摄像头数据采集
+- **文件**: `backend/scripts/collect_training_data.py`
+- **功能**: 打开摄像头运行 MediaPipe，自动/手动保存标注帧
+- **输出**: YOLO 格式 (JPEG 图片 + 边界框 + 17 COCO 关键点标签)
+- **特点**: 实时叠加可视化, 姿态变化检测防重复, 自动采集模式
+- **修复**: 关键点坐标裁剪至 [0,1] 防止越界
+
+#### 3.9.3 自定义模型训练
 - **文件**: `backend/scripts/train_yolo_pose.py`
 - **功能**: 使用 MediaPipe 自动标注数据进行知识蒸馏训练
-- **配置**: `backend/configs/yolo_train.yaml`
-- **训练参数**: 100 epochs, imgsz=640, batch=16, lr=0.001, 早停 patience=20
-- **数据增强**: mosaic, mixup, copy-paste, HSV 抖动, 旋转, 缩放, 翻转
+- **配置**: `backend/configs/custom_pose.yaml`
+- **训练参数**: 30 epochs, imgsz=640, batch=16, AdamW, GPU (RTX 5060 Ti)
+- **数据增强**: mosaic, mixup, HSV 抖动, 旋转, 缩放, 翻转
+- **训练结果**:
+  - Pose mAP50: 0.015 (预训练) → **0.995** (自定义) ↑66 倍
+  - Pose mAP50-95: 0.013 (预训练) → **0.987** (自定义) ↑76 倍
+  - 推理速度: 2.0ms/帧 (不变)
 - **输出**: `backend/models/yolo_pose_custom.pt` + ONNX 导出
+- **详细报告**: [训练报告](../docs/training_report.md)
 
-### 3.10 性能基准测试工具
+### 3.10 标准化日志系统
 
-- **文件**: `backend/scripts/benchmark.py`
-- **功能**: 对比三种后端在相同视频/摄像头输入下的表现
-- **指标**: 总帧数, 检测帧数, 检测率(%), 平均延迟(ms), 平均FPS, 关键点抖动
-- **输出**: 格式化对比表格
+- **文件**: `backend/app/core/logger.py`
+- **功能**: 统一姿态帧日志格式，便于调试 XYZ 坐标变化
+- **格式**: `[{tag}] #{seq} +{elapsed}s keypoint=(x,y,z,v0.90) ...`
+- **集成**: 已集成到三种检测流水线 (pose_detection.py, yolo_detection.py)
+- **前端日志**: mecha.js 每 30 帧输出全部 13 关键点 XYZ + 可见度
+
+### 3.11 3D 调试骨骼可视化
+
+- **文件**: `frontend/src/mecha.js` (DebugSkeleton 类)
+- **功能**: 在 3D 场景中显示 13 个彩色球体 + 14 条骨骼连线
+- **颜色**: 头部 (青绿)、上肢 (红)、下肢 (蓝)
+- **开关**: 通过 `mecha.attachDebugSkeleton(scene)` 启用的
+- **作用**: 直观验证姿态数据是否正确传入 Three.js
 
 ### 3.11 配置管理系统
 
@@ -277,34 +307,41 @@ my_digital_twin/
 ├── README.md                           # 项目说明
 ├── start.bat / start.sh                # 一键启动脚本
 ├── docs/
-│   ├── requirements.md                 # 一阶段：需求分析
-│   ├── tech_selection.md               # 二阶段：技术选型
-│   └── yolo_integration_plan.md        # YOLOv8 集成方案
+│   ├── project_report.md                 # 项目成果报告
+│   ├── training_report.md                # 模型训练报告 (本次)
+│   ├── development_plan.md               # 未来发展计划
+│   ├── requirements.md                   # 一阶段：需求分析
+│   ├── tech_selection.md                 # 二阶段：技术选型
+│   └── yolo_integration_plan.md          # YOLOv8 集成方案
 ├── backend/
-│   ├── .env                            # 环境配置
-│   ├── requirements.txt                # Python 依赖
-│   ├── setup.py                        # 资源下载脚本
+│   ├── .env                              # 环境配置
+│   ├── requirements.txt                  # Python 依赖
+│   ├── setup.py                          # 资源下载脚本
 │   ├── configs/
-│   │   └── yolo_train.yaml            # YOLO 训练超参数
+│   │   ├── custom_pose.yaml             # YOLO 训练数据集配置
+│   │   └── yolo_train.yaml              # YOLO 训练超参数
 │   ├── models/
-│   │   ├── pose_landmarker_lite.task   # MediaPipe 模型
-│   │   ├── yolov8n.pt                  # YOLOv8n 人物检测
-│   │   └── yolov8n-pose.pt            # YOLOv8n-pose 姿态估计
+│   │   ├── pose_landmarker_lite.task     # MediaPipe 模型
+│   │   ├── yolov8n.pt                    # YOLOv8n 人物检测
+│   │   ├── yolov8n-pose.pt              # YOLOv8n-pose 姿态估计 (预训练)
+│   │   └── yolo_pose_custom.pt          # YOLOv8n-pose (自定义训练)
 │   ├── scripts/
-│   │   ├── collect_training_data.py    # 数据采集工具
-│   │   ├── train_yolo_pose.py          # 训练脚本
-│   │   └── benchmark.py               # 性能基准测试
+│   │   ├── generate_synthetic_data.py    # 合成数据生成
+│   │   ├── collect_training_data.py      # 摄像头数据采集
+│   │   ├── train_yolo_pose.py            # 训练脚本
+│   │   └── benchmark.py                  # 性能基准测试
 │   └── app/
-│       ├── main.py                     # FastAPI 入口
+│       ├── main.py                       # FastAPI 入口
 │       ├── core/
-│       │   └── config.py              # 配置管理
+│       │   ├── config.py                 # 配置管理
+│       │   └── logger.py                 # 标准化日志系统
 │       ├── models/
-│       │   └── pose.py                # 数据模型
+│       │   └── pose.py                   # 数据模型
 │       ├── api/routes/
-│       │   └── pose.py                # WebSocket + REST API
+│       │   └── pose.py                   # WebSocket + REST API
 │       └── services/
-│           ├── pose_detection.py       # MediaPipe 服务
-│           └── yolo_detection.py       # YOLO + Hybrid 服务
+│           ├── pose_detection.py          # MediaPipe 服务
+│           └── yolo_detection.py          # YOLO + Hybrid 服务
 └── frontend/
     ├── index.html                      # SPA 入口
     ├── package.json                    # 依赖配置
